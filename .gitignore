@@ -14,7 +14,8 @@ ENV/
 # ONNX Large Model File (Auto-downloaded in app.py)
 *.onnx
 
-# Captured Images
+# Captured Images & Directory
+captures/
 capture_*.png
 captured_*.png
 *.jpg
