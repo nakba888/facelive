@@ -453,9 +453,10 @@ def main():
                     _, detected_faces = detector.detect(raw_frame)
             print(f"[화질 변경] {res_name} ({w}x{h}) 설정 완료")
 
-        # S 키: 현재 프레임 이미지로 저장
+        # S 키: 현재 프레임 이미지로 저장 (날짜 및 시간 타임스탬프 파일명 적용)
         elif key in (ord('s'), ord('S')):
-            filename = f"capture_{w}x{h}_{'frozen' if is_frozen else 'live'}.png"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"capture_{timestamp}_{w}x{h}_{'frozen' if is_frozen else 'live'}.png"
             cv2.imwrite(filename, display_frame)
             print(f"[저장 성공] 현재 화면이 '{filename}' 파일로 저장되었습니다.")
 
