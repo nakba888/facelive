@@ -135,41 +135,36 @@ def draw_faces(image, faces, score_threshold=0.8):
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2, cv2.LINE_AA
         )
 
-        # 얼굴 상자 내부 좌측 상단에 큰 순위 숫자 표시 (#1, #2...)
-        rank_str = f"#{rank}"
-        cv2.putText(
-            image, rank_str, (x + 8, y + 30),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.9, box_color, 2, cv2.LINE_AA
-        )
-
-        # 5개 랜드마크 (오른쪽 눈, 왼쪽 눈, 코끝, 오른쪽 입꼬리, 왼쪽 입꼬리)
-        landmarks = list(map(int, face[4:14]))
-        colors = [
-            (255, 0, 0),    # 오른쪽 눈 (파랑)
-            (0, 0, 255),    # 왼쪽 눈 (빨강)
-            (0, 255, 255),  # 코끝 (노랑)
-            (255, 255, 0),  # 오른쪽 입꼬리 (청록)
-            (255, 0, 255)   # 왼쪽 입꼬리 (보라)
-        ]
-        for i in range(5):
-            lx, ly = landmarks[i * 2], landmarks[i * 2 + 1]
-            cv2.circle(image, (lx, ly), 4, colors[i], -1)
-
-    return len(valid_faces)
-
+def open_camera(cam_id):
+    """지정한 카메라 ID(0: 내장웹캠, 1: USB웹캠)를 안전하게 연결합니다."""
+    cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(cam_id)
+    return cap
 
 
 def main():
     # 1. YuNet 모델 다운로드 검사
     download_model_if_needed()
 
-    # 2. 웹캠 연결 (Windows DSHOW 백엔드 우선 적용으로 드라이버 안정성 향상)
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    # CLI 인자로 카메라 번호 지정 가능 (예: python app.py 1)
+    cam_id = 0
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        cam_id = int(sys.argv[1])
+
+    # 2. 웹캠 연결 (Windows DSHOW 백엔드 우선 적용)
+    cap = open_camera(cam_id)
+
+    # 지정한 카메라 연결 실패 시 다른 번호로 백업 연결 시도 (1번 시도 후 0번)
     if not cap.isOpened():
-        cap = cv2.VideoCapture(0)
+        fallback_id = 0 if cam_id != 0 else 1
+        print(f"[알림] 카메라 {cam_id}번 연결 실패. 카메라 {fallback_id}번으로 연결 시도합니다...")
+        cap = open_camera(fallback_id)
+        if cap.isOpened():
+            cam_id = fallback_id
 
     if not cap.isOpened():
-        print("[Error] 카메라는 연결할 수 없습니다. (카메라 장치 번호를 확인해주세요)")
+        print("[Error] 카메라는 연결할 수 없습니다. USB 웹캠 연결을 확인해 주세요.")
         return
 
     # 첫 프레임 읽어 입력 크기 설정
@@ -210,13 +205,13 @@ def main():
     face_count = 0
 
     print("\n" + "=" * 65)
-    print("      YuNet OpenCV 얼굴 감지 & 실시간 화질/FPS 조절 (facelive)")
+    print("      YuNet OpenCV 얼굴 감지 & 실시간 화질/카메라 조절 (facelive)")
     print("=" * 65)
     print(" 조작 방법:")
     print("   [Space Bar]   : 화면 정지(Pause) / 다시 재생(Resume)")
     print("   [1 / 2 / 3 / 4]: 화질(해상도) 즉시 변경 (1:낮음 -> 4:높음)")
-    print("                     1: 240p | 2: 480p | 3: 720p(HD) | 4: 1080p(FHD)")
     print("   [R]           : 다음 화질로 순환 변경")
+    print("   [C]           : 카메라 전환 (0: 내장웹캠 <-> 1: USB웹캠)")
     print("   [F]           : 실시간 FPS(프레임 수) 표시 ON / OFF")
     print("   [S]           : 현재 화면 이미지 파일로 저장")
     print("   [Q / ESC]     : 프로그램 종료")
@@ -258,21 +253,22 @@ def main():
         # 1. 얼굴 및 순위(#1, #2...) 그리기
         face_count = draw_faces(display_frame, detected_faces, score_threshold=0.8)
 
-        # 2. 상단 좌측: 상태 표시 (LIVE는 녹색, FROZEN은 빨간색으로 깔끔하게 1개만 표시)
+        # 2. 상단 좌측: 상태 및 카메라 번호 표시
+        cam_type_str = "USB Cam #1" if cam_id == 1 else f"Cam #{cam_id}"
         if not is_frozen:
             cv2.circle(display_frame, (25, 25), 8, (0, 255, 0), -1)
             cv2.putText(
-                display_frame, f"LIVE | Faces: {face_count}", (42, 31),
+                display_frame, f"LIVE ({cam_type_str}) | Faces: {face_count}", (42, 31),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA
             )
         else:
             cv2.circle(display_frame, (25, 25), 8, (0, 0, 255), -1)
             cv2.putText(
-                display_frame, f"FROZEN (PAUSED) | Faces: {face_count}", (42, 31),
+                display_frame, f"FROZEN ({cam_type_str}) | Faces: {face_count}", (42, 31),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2, cv2.LINE_AA
             )
 
-        # 3. 상단 우측: 현재 해상도 배지 표시 (예: Res: 1280x720 (720p HD))
+        # 3. 상단 우측: 현재 해상도 배지 표시
         res_name = RESOLUTIONS[res_index][0]
         res_info = f"Res: {w}x{h} ({res_name})"
         (res_w, res_h), _ = cv2.getTextSize(res_info, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
@@ -304,7 +300,7 @@ def main():
             )
 
         # 5. 하단 조작 가이드 안내
-        guide_text = "[Space]: Freeze  |  [1-4/R]: Res (1:Low->4:High)  |  [F]: FPS  |  [S]: Save  |  [Q]: Quit"
+        guide_text = "[Space]: Freeze  |  [1-4]: Res  |  [C]: Switch Cam  |  [F]: FPS  |  [S]: Save"
         cv2.putText(
             display_frame, guide_text, (15, h - 15),
             cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA
@@ -312,8 +308,6 @@ def main():
 
         # 화면 출력
         cv2.imshow("YuNet Face Detection - facelive", display_frame)
-
-
 
         # 키 입력 대기 (1ms)
         key = cv2.waitKey(1) & 0xFF
@@ -327,6 +321,25 @@ def main():
             is_frozen = not is_frozen
             status = "FROZEN (화면 멈춤)" if is_frozen else "RESUMED (실시간 재생)"
             print(f"[상태 변경] {status}")
+
+        # C 키: 카메라 0번(내장) <-> 1번(USB) 실시간 전환
+        elif key in (ord('c'), ord('C')):
+            next_cam_id = 1 if cam_id == 0 else 0
+            print(f"[카메라 전환] 카메라 {next_cam_id}번으로 전환 시도 중...")
+            cap.release()
+            new_cap = open_camera(next_cam_id)
+            if new_cap.isOpened():
+                target_w, target_h = RESOLUTIONS[res_index][1], RESOLUTIONS[res_index][2]
+                cam_id = next_cam_id
+                cap = new_cap
+                w, h, new_frame = set_camera_resolution(cap, detector, target_w, target_h, w, h)
+                if new_frame is not None and not is_frozen:
+                    raw_frame = new_frame.copy()
+                    _, detected_faces = detector.detect(raw_frame)
+                print(f"[카메라 전환 완료] 카메라 #{cam_id} 연결 성공!")
+            else:
+                print(f"[경고] 카메라 #{next_cam_id}번을 연결할 수 없어 기존 카메라 #{cam_id}를 유지합니다.")
+                cap = open_camera(cam_id)
 
         # F 키: FPS (프레임 수) 표시 토글
         elif key in (ord('f'), ord('F')):
@@ -345,7 +358,7 @@ def main():
                 _, detected_faces = detector.detect(raw_frame)
             print(f"[화질 변경] {res_name} ({w}x{h}) 설정 완료")
 
-        # R 키: 다음 화질로 순환 변경 (낮음 -> 높음 순으로 순환)
+        # R 키: 다음 화질로 순환 변경
         elif key in (ord('r'), ord('R')):
             res_index = (res_index + 1) % len(RESOLUTIONS)
             res_name, target_w, target_h = RESOLUTIONS[res_index]
@@ -367,6 +380,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
