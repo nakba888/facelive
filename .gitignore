@@ -1,0 +1,27 @@
+# Python & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# ONNX Large Model File (Auto-downloaded in app.py)
+*.onnx
+
+# Captured Images
+capture_*.png
+captured_*.png
+*.jpg
+*.jpeg
+*.png
+
+# IDE Configs
+.vscode/
+.idea/
+*.swp
