@@ -136,11 +136,48 @@ def draw_faces(image, faces, score_threshold=0.8):
         )
 
 def open_camera(cam_id):
-    """지정한 카메라 ID(0: 내장웹캠, 1: USB웹캠)를 안전하게 연결합니다."""
+    """지정한 카메라 ID(0: 내장웹캠, 1: USB웹캠)를 안전하게 연결하고 자동 초점을 활성화합니다."""
     cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
     if not cap.isOpened():
         cap = cv2.VideoCapture(cam_id)
+
+    if cap.isOpened():
+        # 카메라 자동 초점(Auto-Focus) 활성화 시도
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+
     return cap
+
+
+# 화면 방향 (가로 / 세로 회전 / 세로 크롭) 모드 정의
+ORIENTATIONS = [
+    ("가로 (16:9 기본)", 0),
+    ("세로 (90° 시계방향 회전)", 1),
+    ("세로 (90° 반시계방향 회전)", 2),
+    ("세로 (9:16 중앙 크롭)", 3),
+]
+
+
+def transform_frame(frame, mode):
+    """선택한 방향 모드에 따라 프레임을 회전하거나 세로 9:16 비율로 크롭합니다."""
+    if frame is None:
+        return None
+
+    if mode == 1:
+        # 90도 시계방향 회전 (카메라를 옆으로 세워 고정했을 때)
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif mode == 2:
+        # 90도 반시계방향 회전
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif mode == 3:
+        # 가로 화면의 중앙을 세로 9:16 비율로 자르기 (카메라는 그대로 두고 세로 뷰 포커스)
+        h, w, _ = frame.shape
+        target_w = int(h * (9.0 / 16.0))
+        if target_w < w:
+            start_x = (w - target_w) // 2
+            return frame[:, start_x:start_x + target_w]
+        return frame
+
+    return frame
 
 
 def main():
@@ -178,7 +215,16 @@ def main():
         print("[Error] 카메라 프레임을 읽어올 수 없습니다.")
         return
 
-    h, w, _ = frame.shape
+    is_frozen = False
+    res_index = 2       # 기본값: 3번 720p HD
+    orient_index = 0    # 기본값: 가로 (16:9 기본)
+    show_fps = True     # F 키로 FPS 표시 토글
+    prev_time = time.time()
+    fps = 0.0
+
+    # 초기 방향 변환 적용
+    raw_frame = transform_frame(frame, orient_index)
+    h, w, _ = raw_frame.shape
 
     # 3. OpenCV YuNet 얼굴 검출기 초기화
     try:
@@ -194,21 +240,20 @@ def main():
         print(f"[Error] FaceDetectorYN 생성 실패: {e}")
         return
 
-    is_frozen = False
-    res_index = 2  # 기본값: 3번 720p HD
-    show_fps = True # F 키로 FPS 표시 토글
-    prev_time = time.time()
-    fps = 0.0
-
-    raw_frame = frame
     detected_faces = None
     face_count = 0
 
+    WINDOW_NAME = "YuNet Face Detection - facelive"
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_NAME, 960, 540)  # 노트북 화면에 잘 맞도록 초기 창 크기 설정
+
     print("\n" + "=" * 65)
-    print("      YuNet OpenCV 얼굴 감지 & 실시간 화질/카메라 조절 (facelive)")
+    print("      YuNet OpenCV 얼굴 감지 & 가로/세로 비율 조절 (facelive)")
     print("=" * 65)
     print(" 조작 방법:")
     print("   [Space Bar]   : 화면 정지(Pause) / 다시 재생(Resume)")
+    print("   [V]           : 가로/세로 화면 비율 변경")
+    print("                     (가로 -> 세로90°시계 -> 세로90°반시계 -> 세로9:16크롭)")
     print("   [1 / 2 / 3 / 4]: 화질(해상도) 즉시 변경 (1:낮음 -> 4:높음)")
     print("   [R]           : 다음 화질로 순환 변경")
     print("   [C]           : 카메라 전환 (0: 내장웹캠 <-> 1: USB웹캠)")
@@ -236,13 +281,19 @@ def main():
             if not ret or frame is None or not hasattr(frame, 'size') or frame.size == 0:
                 continue
 
-            # 해상도가 변경된 경우 입력 크기 업데이트
-            if (frame.shape[1], frame.shape[0]) != (w, h):
-                w, h = frame.shape[1], frame.shape[0]
+            # 세로/가로 방향 변환 적용
+            transformed = transform_frame(frame, orient_index)
+            if transformed is None:
+                continue
+
+            cur_h, cur_w, _ = transformed.shape
+            # 변환 후 프레임 크기가 변경된 경우 입력 크기 업데이트
+            if (cur_w, cur_h) != (w, h):
+                w, h = cur_w, cur_h
                 detector.setInputSize((w, h))
 
-            raw_frame = frame.copy()
-            # YuNet 얼굴 감지 수행
+            raw_frame = transformed.copy()
+            # YuNet 얼굴 감지 수행 (변환된 세로/가로 프레임에서 감지)
             _, detected_faces = detector.detect(raw_frame)
 
         # -------------------------------------------------------------
@@ -268,10 +319,11 @@ def main():
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2, cv2.LINE_AA
             )
 
-        # 3. 상단 우측: 현재 해상도 배지 표시
+        # 3. 상단 우측: 현재 해상도 & 방향 표시
         res_name = RESOLUTIONS[res_index][0]
-        res_info = f"Res: {w}x{h} ({res_name})"
-        (res_w, res_h), _ = cv2.getTextSize(res_info, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        orient_name = ORIENTATIONS[orient_index][0].split(" ")[0]  # 예: "세로" 또는 "가로"
+        res_info = f"{w}x{h} ({orient_name} | {res_name})"
+        (res_w, res_h), _ = cv2.getTextSize(res_info, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
         cv2.rectangle(
             display_frame,
             (w - res_w - 20, 10),
@@ -280,13 +332,13 @@ def main():
         )
         cv2.putText(
             display_frame, res_info, (w - res_w - 15, 30),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2, cv2.LINE_AA
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2, cv2.LINE_AA
         )
 
         # 4. 상단 우측: FPS 표시 배지 (F키로 토글 가능)
         if show_fps:
             fps_info = f"FPS: {fps:.1f}"
-            (fps_w, _), _ = cv2.getTextSize(fps_info, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+            (fps_w, _), _ = cv2.getTextSize(fps_info, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
             fps_x = w - res_w - fps_w - 45
             cv2.rectangle(
                 display_frame,
@@ -296,18 +348,18 @@ def main():
             )
             cv2.putText(
                 display_frame, fps_info, (fps_x, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA
             )
 
         # 5. 하단 조작 가이드 안내
-        guide_text = "[Space]: Freeze  |  [1-4]: Res  |  [C]: Switch Cam  |  [F]: FPS  |  [S]: Save"
+        guide_text = "[Space]: Freeze  |  [V]: Vert/Horiz  |  [1-4]: Res  |  [C]: Cam  |  [F]: FPS"
         cv2.putText(
             display_frame, guide_text, (15, h - 15),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA
         )
 
         # 화면 출력
-        cv2.imshow("YuNet Face Detection - facelive", display_frame)
+        cv2.imshow(WINDOW_NAME, display_frame)
 
         # 키 입력 대기 (1ms)
         key = cv2.waitKey(1) & 0xFF
@@ -322,6 +374,27 @@ def main():
             status = "FROZEN (화면 멈춤)" if is_frozen else "RESUMED (실시간 재생)"
             print(f"[상태 변경] {status}")
 
+        # V 키: 가로/세로 화면 비율 모드 변경
+        elif key in (ord('v'), ord('V')):
+            orient_index = (orient_index + 1) % len(ORIENTATIONS)
+            orient_name = ORIENTATIONS[orient_index][0]
+            print(f"[화면 방향 변경] {orient_name} 적용")
+
+            # 새로운 방향으로 프레임 크기 업데이트 및 감지기 재설정
+            if not is_frozen and raw_frame is not None:
+                transformed = transform_frame(frame, orient_index)
+                if transformed is not None:
+                    w, h = transformed.shape[1], transformed.shape[0]
+                    detector.setInputSize((w, h))
+                    raw_frame = transformed.copy()
+                    _, detected_faces = detector.detect(raw_frame)
+
+                    # 세로 모드일 경우 노트북 화면에 잘 맞도록 창 크기 조정
+                    if orient_index != 0:
+                        cv2.resizeWindow(WINDOW_NAME, 450, 800)
+                    else:
+                        cv2.resizeWindow(WINDOW_NAME, 960, 540)
+
         # C 키: 카메라 0번(내장) <-> 1번(USB) 실시간 전환
         elif key in (ord('c'), ord('C')):
             next_cam_id = 1 if cam_id == 0 else 0
@@ -334,8 +407,12 @@ def main():
                 cap = new_cap
                 w, h, new_frame = set_camera_resolution(cap, detector, target_w, target_h, w, h)
                 if new_frame is not None and not is_frozen:
-                    raw_frame = new_frame.copy()
-                    _, detected_faces = detector.detect(raw_frame)
+                    transformed = transform_frame(new_frame, orient_index)
+                    if transformed is not None:
+                        w, h = transformed.shape[1], transformed.shape[0]
+                        detector.setInputSize((w, h))
+                        raw_frame = transformed.copy()
+                        _, detected_faces = detector.detect(raw_frame)
                 print(f"[카메라 전환 완료] 카메라 #{cam_id} 연결 성공!")
             else:
                 print(f"[경고] 카메라 #{next_cam_id}번을 연결할 수 없어 기존 카메라 #{cam_id}를 유지합니다.")
@@ -354,8 +431,12 @@ def main():
             res_index = target_idx
             w, h, new_frame = set_camera_resolution(cap, detector, target_w, target_h, w, h)
             if new_frame is not None and not is_frozen:
-                raw_frame = new_frame.copy()
-                _, detected_faces = detector.detect(raw_frame)
+                transformed = transform_frame(new_frame, orient_index)
+                if transformed is not None:
+                    w, h = transformed.shape[1], transformed.shape[0]
+                    detector.setInputSize((w, h))
+                    raw_frame = transformed.copy()
+                    _, detected_faces = detector.detect(raw_frame)
             print(f"[화질 변경] {res_name} ({w}x{h}) 설정 완료")
 
         # R 키: 다음 화질로 순환 변경
@@ -364,8 +445,12 @@ def main():
             res_name, target_w, target_h = RESOLUTIONS[res_index]
             w, h, new_frame = set_camera_resolution(cap, detector, target_w, target_h, w, h)
             if new_frame is not None and not is_frozen:
-                raw_frame = new_frame.copy()
-                _, detected_faces = detector.detect(raw_frame)
+                transformed = transform_frame(new_frame, orient_index)
+                if transformed is not None:
+                    w, h = transformed.shape[1], transformed.shape[0]
+                    detector.setInputSize((w, h))
+                    raw_frame = transformed.copy()
+                    _, detected_faces = detector.detect(raw_frame)
             print(f"[화질 변경] {res_name} ({w}x{h}) 설정 완료")
 
         # S 키: 현재 프레임 이미지로 저장
@@ -380,6 +465,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
